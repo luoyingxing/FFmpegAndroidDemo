@@ -51,8 +51,7 @@ void onResponse(JNIEnv *env, jbyteArray array) {
 }
 
 void pgm_save(const char *buf, int wrap, int xsize, int ysize, char *filename) {
-//    LOGW("=====>> pgm_save   %d   %d   %d   %s   buf.size: %d", wrap, xsize, ysize, filename,
-//         strlen(buf));
+    LOGW("=====>> pgm_save   wrap:%d   [%d x %d]   bufSize: %d", wrap, xsize, ysize, strlen(buf));
 
 //    FILE *f;
 //    int i;
@@ -219,10 +218,11 @@ Java_com_lyx_ffmpeg_MainActivity_play(JNIEnv *env, jobject obj) {
     }
 
     frame_count = 0;
+    int one = 1;
     for (;;) {
         avpkt.size = fread(inbuf, 1, INBUF_SIZE, f);
-
-//        LOGI("check avpkt.size  %d", avpkt.size);
+        LOGD("for 循环第%d次  读取长度  %d", one, avpkt.size);
+        one++;
 
         if (avpkt.size == 0) {
             break;
@@ -244,7 +244,11 @@ Java_com_lyx_ffmpeg_MainActivity_play(JNIEnv *env, jobject obj) {
         /* here, we use a stream based decoder (mpeg1video), so we
            feed decoder and see if it could decode a frame */
         avpkt.data = inbuf;
+
+        int two = 1;
         while (avpkt.size > 0) {
+            LOGI("while第%d次  avpkt.size  %d", two, avpkt.size);
+            two++;
             if (decode_write_frame(outfilename, c, frame, &frame_count, &avpkt, 0) < 0) {
                 return;
             }
