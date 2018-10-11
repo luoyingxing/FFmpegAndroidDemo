@@ -76,7 +76,7 @@ public class MainActivity extends AppCompatActivity implements JniReponse.Respon
     }
 
     private void parserStream() {
-        InputStream inputStream = getResources().openRawResource(R.raw.cuc_ieschool);
+        InputStream inputStream = getResources().openRawResource(R.raw.fwj);
         byte[] buffer = new byte[1024 * 8];
 
         int len;
