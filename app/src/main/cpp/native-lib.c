@@ -20,6 +20,10 @@ extern "C"{
 #include "include/libavutil/mathematics.h"
 #include "include/libavutil/samplefmt.h"
 
+#include <android/bitmap.h>
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
+
 #define INBUF_SIZE 4096
 #define AUDIO_INBUF_SIZE 20480
 #define AUDIO_REFILL_THRESH 4096
@@ -37,11 +41,451 @@ jmethodID g_method_onResponse = NULL;
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+typedef struct _VoutInfo {
+    /**
+    WINDOW_FORMAT_RGBA_8888          = 1,
+    WINDOW_FORMAT_RGBX_8888          = 2,
+    WINDOW_FORMAT_RGB_565            = 4,*/
+    uint32_t pix_format;
+
+    uint32_t buffer_width;
+    uint32_t buffer_height;
+    uint8_t *buffer;
+} VoutInfo;
+
+typedef struct _NalInfo {
+    uint8_t forbidden_zero_bit;
+    uint8_t nal_ref_idc;
+    uint8_t nal_unit_type;
+} NalInfo;
+
+typedef struct _RenderParam {
+    struct SwsContext *swsContext;
+    AVCodecContext *avCodecContext;
+} RenderParam;
+
+typedef struct _EnvPackage {
+    JNIEnv *env;
+    jobject *obj;
+    jobject *surface;
+} EnvPackage;
+
+enum {
+    PIXEL_FORMAT_RGBA_8888 = 1,
+    PIXEL_FORMAT_RGBX_8888 = 2,
+    PIXEL_FORMAT_RGB_565 = 3
+};
+
+typedef struct _VoutRender {
+    uint32_t pix_format;
+    uint32_t window_format;
+
+    void (*render)(ANativeWindow_Buffer *nwBuffer, VoutInfo *voutInfo);
+} VoutRender;
+
+uint8_t inbuf[INBUF_SIZE + FF_INPUT_BUFFER_PADDING_SIZE];
+int init = 0;
+AVPacket avpkt;
+RenderParam *renderParam;
+AVCodec *codec;
+AVCodecContext *codecContext;
+AVFrame *frame;
+AVCodecParserContext *parser;
+int frame_count;
+struct SwsContext *img_convert_ctx;
+AVFrame *pFrameRGB;
+enum AVPixelFormat pixelFormat;
+int native_pix_format = PIXEL_FORMAT_RGB_565;
+
+void render_on_rgb(ANativeWindow_Buffer *nwBuffer, VoutInfo *voutInfo, int bpp) {
+
+    int stride = nwBuffer->stride;
+    int dst_width = nwBuffer->width;
+    int dst_height = nwBuffer->height;
+    LOGE("ANativeWindow stride %d width %d height %d", stride, dst_width, dst_height);
+    int line = 0;
+
+    int src_line_size = voutInfo->buffer_width * bpp / 8;
+    int dst_line_size = stride * bpp / 8;
+
+    int min_height = dst_height < voutInfo->buffer_height ? dst_height : voutInfo->buffer_height;
+
+    if (src_line_size == dst_line_size) {
+        memcpy((__uint8_t *) nwBuffer->bits, (__uint8_t *) voutInfo->buffer,
+               src_line_size * min_height);
+    } else {
+        //直接copy
+        /*for(int i=0; i<height; i++){
+            memcpy((__uint8_t *) (nwBuffer.bits + line), (__uint8_t *)(rgbFrame->data[0]+ width*i * 2), width * 2);
+            line += stride * 2;
+        }*/
+
+        //使用ffmpeg的函数 实现相同功能
+        av_image_copy_plane(nwBuffer->bits, dst_line_size, voutInfo->buffer, src_line_size,
+                            src_line_size, min_height);
+    }
+}
+
+void render_on_rgb8888(ANativeWindow_Buffer *nwBuffer, VoutInfo *voutInfo) {
+    render_on_rgb(nwBuffer, voutInfo, 32);
+}
+
+void render_on_rgb565(ANativeWindow_Buffer *nwBuffer, VoutInfo *voutInfo) {
+    render_on_rgb(nwBuffer, voutInfo, 16);
+}
+
+static VoutRender g_pixformat_map[] = {
+        {PIXEL_FORMAT_RGBA_8888, WINDOW_FORMAT_RGBA_8888, render_on_rgb8888},
+        {PIXEL_FORMAT_RGBX_8888, WINDOW_FORMAT_RGBX_8888, render_on_rgb8888},
+        {PIXEL_FORMAT_RGB_565,   WINDOW_FORMAT_RGB_565,   render_on_rgb565}
+};
 
 JNIEXPORT jstring JNICALL
 Java_com_lyx_ffmpeg_MainActivity_stringFromJNI(JNIEnv *env, jobject obj) {
-    char *str = "Get from .c";
+    char *str = "Play H264 now";
     return (*env)->NewStringUTF(env, str);
+}
+
+int handleH264Header(uint8_t *ptr, NalInfo *nalInfo) {
+    int startIndex = 0;
+    uint32_t *checkPtr = (uint32_t *) ptr;
+    if (*checkPtr == 0x01000000) {  // 00 00 00 01
+        startIndex = 4;
+    } else if (*(checkPtr) == 0 && *(checkPtr + 1) & 0x01000000) {  // 00 00 00 00 01
+        startIndex = 5;
+    }
+
+    if (!startIndex) {
+        return -1;
+    } else {
+        ptr = ptr + startIndex;
+        nalInfo->nal_unit_type = 0x1f & *ptr;
+        if (nalInfo->nal_unit_type == 5 || nalInfo->nal_unit_type == 7 ||
+            nalInfo->nal_unit_type == 8 || nalInfo->nal_unit_type == 2) {  //I frame
+            LOGE("I frame");
+        } else if (nalInfo->nal_unit_type == 1) {
+            LOGE("P frame");
+        }
+    }
+    return 0;
+}
+
+AVFrame *
+yuv420p_2_argb(AVFrame *frame, struct SwsContext *swsContext, AVCodecContext *avCodecContext,
+               enum AVPixelFormat format) {
+    AVFrame *pFrameRGB = NULL;
+    uint8_t *out_bufferRGB = NULL;
+    pFrameRGB = av_frame_alloc();
+
+    pFrameRGB->width = frame->width;
+    pFrameRGB->height = frame->height;
+
+    //给pFrameRGB帧加上分配的内存;  //AV_PIX_FMT_ARGB
+    int size = avpicture_get_size(format, avCodecContext->width, avCodecContext->height);
+    //out_bufferRGB = new uint8_t[size];
+    out_bufferRGB = av_malloc(size * sizeof(uint8_t));
+    avpicture_fill((AVPicture *) pFrameRGB, out_bufferRGB, format, avCodecContext->width,
+                   avCodecContext->height);
+    //YUV to RGB
+    sws_scale(swsContext, frame->data, frame->linesize, 0, avCodecContext->height, pFrameRGB->data,
+              pFrameRGB->linesize);
+
+    return pFrameRGB;
+}
+
+VoutRender *get_render_by_window_format(int window_format) {
+    int len = sizeof(g_pixformat_map);
+    for (int i = 0; i < len; i++) {
+        if (g_pixformat_map[i].window_format == window_format) {
+            return &g_pixformat_map[i];
+        }
+    }
+}
+
+void android_native_window_display(ANativeWindow *aNativeWindow, VoutInfo *voutInfo) {
+
+    int curr_format = ANativeWindow_getFormat(aNativeWindow);
+    VoutRender *render = get_render_by_window_format(curr_format);
+
+    ANativeWindow_Buffer nwBuffer;
+    //ANativeWindow *aNativeWindow = ANativeWindow_fromSurface(envPackage->env, *(envPackage->surface));
+    if (aNativeWindow == NULL) {
+        LOGE("ANativeWindow_fromSurface error");
+        return;
+    }
+
+    //scaled buffer to fit window
+    int retval = ANativeWindow_setBuffersGeometry(aNativeWindow, voutInfo->buffer_width,
+                                                  voutInfo->buffer_height, render->window_format);
+    if (retval < 0) {
+        LOGE("ANativeWindow_setBuffersGeometry: error %d", retval);
+//        return retval;
+    }
+
+    if (0 != ANativeWindow_lock(aNativeWindow, &nwBuffer, 0)) {
+        LOGE("ANativeWindow_lock error");
+        return;
+    }
+
+    render->render(&nwBuffer, voutInfo);
+
+    if (0 != ANativeWindow_unlockAndPost(aNativeWindow)) {
+        LOGE("ANativeWindow_unlockAndPost error");
+        return;
+    }
+    //ANativeWindow_release(aNativeWindow);
+}
+
+void handle_data(AVFrame *pFrame, void *param, void *ctx) {
+
+    RenderParam *renderParam = (RenderParam *) param;
+
+    AVFrame *rgbFrame = yuv420p_2_argb(pFrame, renderParam->swsContext, renderParam->avCodecContext,
+                                       pixelFormat);//AV_PIX_FMT_RGB565LE
+
+    LOGE("width %d height %d", rgbFrame->width, rgbFrame->height);
+
+    //for test decode image
+    //save_rgb_image(rgbFrame);
+
+    EnvPackage *envPackage = (EnvPackage *) ctx;
+    ANativeWindow *aNativeWindow = ANativeWindow_fromSurface(envPackage->env,
+                                                             *(envPackage->surface));
+
+    VoutInfo voutInfo;
+    voutInfo.buffer = rgbFrame->data[0];
+    voutInfo.buffer_width = rgbFrame->width;
+    voutInfo.buffer_height = rgbFrame->height;
+    voutInfo.pix_format = native_pix_format;
+
+    android_native_window_display(aNativeWindow, &voutInfo);
+
+    ANativeWindow_release(aNativeWindow);
+
+    av_free(rgbFrame->data[0]);
+    av_free(rgbFrame);
+}
+
+int decodeFrame(const char *data, int length, void *ctx) {
+    //void (*handle_data)(AVFrame *pFrame, void *param, void *ctx)
+
+    int cur_size = length;
+    int ret = 0;
+
+    memcpy(inbuf, data, length);
+    const uint8_t *cur_ptr = inbuf;
+    // Parse input stream to check if there is a valid frame.
+    //std::cout << " in data  --  -- " << length<< std::endl;
+    while (cur_size > 0) {
+        int parsedLength = av_parser_parse2(parser, codecContext, &avpkt.data,
+                                            &avpkt.size, (const uint8_t *) cur_ptr, cur_size,
+                                            AV_NOPTS_VALUE,
+                                            AV_NOPTS_VALUE, AV_NOPTS_VALUE);
+        cur_ptr += parsedLength;
+        cur_size -= parsedLength;
+        //std::cout <<" avpkt.size  "<< avpkt.size << " -- cur_size "<< cur_size <<" "<<parsedLength<< std::endl;
+        // 67 sps
+        // 68 pps
+        // 65 i
+        // 61 p
+        //LOGE("parsedLength %d    %x %x %x %x %x %x %x %x", parsedLength, cur_ptr[0], cur_ptr[1], cur_ptr[2], cur_ptr[3], cur_ptr[4], cur_ptr[5], cur_ptr[6], cur_ptr[7]);
+        //LOGE("parsedLength %d    %x %x %x %x %x %x %x %x", parsedLength, *(cur_ptr-parsedLength), *(cur_ptr-parsedLength+1), *(cur_ptr-parsedLength+2), *(cur_ptr-parsedLength+3), *(cur_ptr-parsedLength+4), *(cur_ptr-parsedLength+5), *(cur_ptr-parsedLength+6), *(cur_ptr-parsedLength+7));
+        NalInfo nalInfo;
+        ret = handleH264Header(cur_ptr - parsedLength, &nalInfo);
+        if (ret == 0) {
+        }
+
+        if (!avpkt.size) {
+            continue;
+        } else {
+
+            int len, got_frame;
+            len = avcodec_decode_video2(codecContext, frame, &got_frame, &avpkt);
+
+            if (len < 0) {
+                LOGE("Error while decoding frame %d\n", frame_count);
+                //break;
+                continue;
+                // exit(1);
+            }
+
+            if (got_frame) {
+                frame_count++;
+
+                LOGE("frame %d", frame_count);
+
+                if (img_convert_ctx == NULL) {
+                    img_convert_ctx = sws_getContext(codecContext->width, codecContext->height,
+                                                     codecContext->pix_fmt, codecContext->width,
+                                                     codecContext->height,
+                                                     pixelFormat, SWS_BICUBIC, NULL, NULL, NULL);
+
+                    renderParam = (RenderParam *) malloc(sizeof(RenderParam));
+                    renderParam->swsContext = img_convert_ctx;
+                    renderParam->avCodecContext = codecContext;
+                }
+
+                if (img_convert_ctx != NULL) {
+                    handle_data(frame, renderParam, ctx);
+                }
+
+                //根据编码信息设置渲染格式
+                /*if(img_convert_ctx == NULL){
+                    //std::cout << " init img_convert_ctx \n";
+                    img_convert_ctx = sws_getContext(codecContext->width, codecContext->height,
+                            codecContext->pix_fmt, codecContext->width, codecContext->height,
+                            AV_PIX_FMT_BGR24, SWS_BICUBIC, NULL, NULL, NULL);
+                }
+
+                //----------------------opencv
+                cv::Mat curmat;
+                curmat.create(cv::Size(codecContext->width, codecContext->height),CV_8UC3);
+
+                if(img_convert_ctx != NULL)
+                {
+                    AVFrame	*pFrameRGB = NULL;
+                    uint8_t  *out_bufferRGB = NULL;
+                    pFrameRGB = av_frame_alloc();
+                    //给pFrameRGB帧加上分配的内存;
+                    int size = avpicture_get_size(AV_PIX_FMT_BGR24, codecContext->width, codecContext->height);
+                    out_bufferRGB = new uint8_t[size];
+                    avpicture_fill((AVPicture *)pFrameRGB, out_bufferRGB, AV_PIX_FMT_BGR24, codecContext->width, codecContext->height);
+
+                    //YUV to RGB
+                    sws_scale(img_convert_ctx, frame->data, frame->linesize, 0, codecContext->height, pFrameRGB->data, pFrameRGB->linesize);
+
+                    memcpy(curmat.data,out_bufferRGB,size);
+
+                    vecMat.push(curmat);
+
+                    delete[] out_bufferRGB;
+                    av_free(pFrameRGB);
+                }*/
+            }
+        }
+    }
+
+    return length;
+}
+
+JNIEXPORT void JNICALL
+Java_com_lyx_ffmpeg_MainActivity_parserStream(JNIEnv *env, jobject obj, jbyteArray jdata,
+                                              jint length, jobject surface) {
+    if (init == 0) {
+        init++;
+
+        /* register all the codecs */
+        avcodec_register_all();
+        av_init_packet(&avpkt);
+
+        renderParam = NULL;
+
+        /* set end of buffer to 0 (this ensures that no overreading happens for damaged mpeg streams) */
+        memset(inbuf, 0, INBUF_SIZE);
+
+        memset(inbuf + INBUF_SIZE, 0, FF_INPUT_BUFFER_PADDING_SIZE);
+
+        /* find the x264 video decoder */
+        codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+        if (!codec) {
+            LOGE("Codec not found");
+            return;
+        }
+
+        codecContext = avcodec_alloc_context3(codec);
+        if (!codecContext) {
+            LOGE("Could not allocate video codec context");
+            return;
+        }
+
+        /* put sample parameters */
+        //codecContext->bit_rate = 500000;
+        //codecContext->width = 640;
+        //codecContext->height = 480;
+        //codecContext->time_base = (AVRational ) { 1, 15 };
+        //codecContext->framerate = (AVRational ) { 1, 15 };
+        //codecContext->gop_size = 1;
+        //codecContext->max_b_frames = 0;
+        //codecContext->pix_fmt = AV_PIX_FMT_YUV420P;
+        //codecContext->ticks_per_frame = 0;
+        //codecContext->delay = 0;
+        //codecContext->b_quant_offset = 0.0;
+        //codecContext->refs = 0;
+        //codecContext->slices = 1;
+        //codecContext->has_b_frames = 0;
+        //codecContext->thread_count = 2;
+        //av_opt_set(codecContext->priv_data, "zerolatency", "ultrafast", 0);
+
+        /* we do not send complete frames */
+        if (codec->capabilities & CODEC_CAP_TRUNCATED) {
+            codecContext->flags |= CODEC_FLAG_TRUNCATED;
+        }
+
+        /* open it */
+        if (avcodec_open2(codecContext, codec, NULL) < 0) {
+            LOGE("Could not open codec");
+            return;
+        }
+
+        frame = av_frame_alloc();
+        if (!frame) {
+            LOGE("Could not allocate video frame");
+            return;
+        }
+
+        parser = av_parser_init(AV_CODEC_ID_H264);
+        if (!parser) {
+            LOGE("cannot create parser");
+            return;
+        }
+
+        //    parser->flags |= PARSER_FLAG_ONCE;
+        LOGI("decoder init ..........");
+
+        frame_count = 0;
+        img_convert_ctx = NULL;
+
+        pFrameRGB = NULL;
+
+        //pixelFormat = AV_PIX_FMT_BGRA;
+        //pixelFormat = AV_PIX_FMT_RGB565LE;
+        //pixelFormat = AV_PIX_FMT_BGR24;
+        pixelFormat = AV_PIX_FMT_RGB565LE;
+    }
+
+
+    //TODO -----------------------------------------------------play stream----------------------------------------------------
+    jbyte *cdata = (*env)->GetByteArrayElements(env, jdata, JNI_FALSE);
+    jbyte *cdata_rec = cdata;
+
+    if (cdata != NULL) {
+        EnvPackage package;
+        package.env = env;
+        package.obj = &obj;
+        package.surface = &surface;
+
+        int len = 0;
+        while (1) {
+            if (length > INBUF_SIZE) {
+                len = INBUF_SIZE;
+                length -= INBUF_SIZE;
+            } else if (length > 0 && length <= INBUF_SIZE) {
+                len = length;
+                length = 0;
+            } else {
+                break;
+            }
+            //decode h264 cdata to yuv and save yuv data to avFrame which would be passed to handle_data
+            decodeFrame(cdata, len, &package);
+            cdata = cdata + len;
+            LOGE("decode length: %d ", len);
+            //this_obj->decodeFrame(cdata, length, handle_data, NULL);
+        }
+    } else {
+        LOGE("stream data is NULL");
+    }
+
+    (*env)->ReleaseByteArrayElements(env, jdata, cdata_rec, 0);
 }
 
 void onResponse(JNIEnv *env, jbyteArray array) {
