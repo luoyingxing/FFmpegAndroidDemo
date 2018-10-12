@@ -8,10 +8,16 @@ import android.util.Log;
 import android.view.Surface;
 import android.view.SurfaceView;
 import android.view.View;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.ProtocolException;
+import java.net.URL;
 
 public class MainActivity extends AppCompatActivity implements JniReponse.ResponseListener {
 
@@ -31,6 +37,8 @@ public class MainActivity extends AppCompatActivity implements JniReponse.Respon
 
     private ImageView imageView;
     private SurfaceView surface;
+    private EditText ip;
+    private EditText port;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -41,13 +49,20 @@ public class MainActivity extends AppCompatActivity implements JniReponse.Respon
         TextView tv = findViewById(R.id.sample_text);
         imageView = findViewById(R.id.image);
         surface = findViewById(R.id.surface);
+        ip = findViewById(R.id.ip);
+        port = findViewById(R.id.port);
 
         tv.setText(stringFromJNI());
         tv.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-//                play();
-                parserStream();
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+//                        play();
+                        parserStream();
+                    }
+                }).start();
             }
         });
 
@@ -76,15 +91,52 @@ public class MainActivity extends AppCompatActivity implements JniReponse.Respon
     }
 
     private void parserStream() {
-        InputStream inputStream = getResources().openRawResource(R.raw.fwj);
-        byte[] buffer = new byte[1024 * 8];
-
-        int len;
+//        InputStream inputStream = getResources().openRawResource(R.raw.fwj);
+//        byte[] buffer = new byte[1024 * 8];
+//
+//        int len;
+//        try {
+//            while ((len = inputStream.read(buffer)) != -1) {
+//                parserStream(buffer, len, surface.getHolder().getSurface());
+//            }
+//        } catch (Exception e) {
+//            e.printStackTrace();
+//        }
+        String url = "http://" + ip.getText().toString().trim() + ":" + port.getText().toString().trim() + "/api/video/h264";
         try {
-            while ((len = inputStream.read(buffer)) != -1) {
-                parserStream(buffer, len, surface.getHolder().getSurface());
+            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setConnectTimeout(20 * 1000);
+            conn.setReadTimeout(20 * 1000);
+            conn.setRequestProperty("Connection", "Keep-Alive");
+            conn.setRequestProperty("User-Agent", "CONWIN");
+            conn.setRequestMethod("GET");
+            conn.connect();
+
+            InputStream inputStream = conn.getInputStream();
+
+            if (HttpURLConnection.HTTP_OK == conn.getResponseCode()) {
+
+                while (true) {
+                    int len = inputStream.available();
+
+                    if (len != -1) {
+                        byte[] read = new byte[len];
+
+                        int readLen = inputStream.read(read);
+
+                        parserStream(read, readLen, surface.getHolder().getSurface());
+
+                    }
+                }
             }
-        } catch (Exception e) {
+
+            inputStream.close();
+            conn.disconnect();
+        } catch (ProtocolException e) {
+            e.printStackTrace();
+        } catch (MalformedURLException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
             e.printStackTrace();
         }
     }
