@@ -25,6 +25,9 @@ add_library( # Sets the name of the library.
 # you want to add. CMake verifies that the library exists before
 # completing its build.
 
+# set()用来设置一个路径全局变量 distribution_DIR
+set(distribution_DIR ${CMAKE_SOURCE_DIR}/src/main/cpp/libs)
+
 #----------------avcodec-57----------------------
 add_library(
             avcodec-57
@@ -35,12 +38,11 @@ set_target_properties(
     avcodec-57
     PROPERTIES IMPORTED_LOCATION
     # change path when ues other computer
-    E:/AndroidStudioProject/FFmpegAndroidDemo/app/src/main/cpp/libs/libavcodec-57.so
+    ${distribution_DIR}/libavcodec-57.so
     )
 include_directories(
     src/main/cpp/include/libavcodec/
 )
-#--------------------------------------
 #----------------avdevice-57----------------------
 add_library(
             avdevice-57
@@ -51,12 +53,11 @@ set_target_properties(
     avdevice-57
     PROPERTIES IMPORTED_LOCATION
     # change path when ues other computer
-    E:/AndroidStudioProject/FFmpegAndroidDemo/app/src/main/cpp/libs/libavdevice-57.so
+    ${distribution_DIR}/libavdevice-57.so
     )
 include_directories(
     src/main/cpp/include/libavdevice/
 )
-#--------------------------------------
 #----------------avformat-57----------------------
 add_library(
             avformat-57
@@ -67,12 +68,11 @@ set_target_properties(
     avformat-57
     PROPERTIES IMPORTED_LOCATION
     # change path when ues other computer
-    E:/AndroidStudioProject/FFmpegAndroidDemo/app/src/main/cpp/libs/libavformat-57.so
+    ${distribution_DIR}/libavformat-57.so
     )
 include_directories(
     src/main/cpp/include/libavformat/
 )
-#--------------------------------------
 #----------------avfilter-6----------------------
 add_library(
             avfilter-6
@@ -83,12 +83,11 @@ set_target_properties(
     avfilter-6
     PROPERTIES IMPORTED_LOCATION
     # change path when ues other computer
-    E:/AndroidStudioProject/FFmpegAndroidDemo/app/src/main/cpp/libs/libavfilter-6.so
+    ${distribution_DIR}/libavfilter-6.so
     )
 include_directories(
     src/main/cpp/include/libavfilter/
 )
-#--------------------------------------
 #----------------avutil-55----------------------
 add_library(
             avutil-55
@@ -99,12 +98,11 @@ set_target_properties(
     avutil-55
     PROPERTIES IMPORTED_LOCATION
     # change path when ues other computer
-    E:/AndroidStudioProject/FFmpegAndroidDemo/app/src/main/cpp/libs/libavutil-55.so
+    ${distribution_DIR}/libavutil-55.so
     )
 include_directories(
     src/main/cpp/include/libavutil/
 )
-#--------------------------------------
 #----------------postproc-54----------------------
 add_library(
             postproc-54
@@ -115,12 +113,11 @@ set_target_properties(
     postproc-54
     PROPERTIES IMPORTED_LOCATION
     # change path when ues other computer
-    E:/AndroidStudioProject/FFmpegAndroidDemo/app/src/main/cpp/libs/libpostproc-54.so
+    ${distribution_DIR}/libpostproc-54.so
     )
 include_directories(
     src/main/cpp/include/libpostproc/
 )
-#--------------------------------------
 #----------------swresample-2----------------------
 add_library(
             swresample-2
@@ -131,12 +128,11 @@ set_target_properties(
     swresample-2
     PROPERTIES IMPORTED_LOCATION
     # change path when ues other computer
-    E:/AndroidStudioProject/FFmpegAndroidDemo/app/src/main/cpp/libs/libswresample-2.so
+    ${distribution_DIR}/libswresample-2.so
     )
 include_directories(
     src/main/cpp/include/libswresample/
 )
-#--------------------------------------
 #----------------swscale-4----------------------
 add_library(
             swscale-4
@@ -147,12 +143,12 @@ set_target_properties(
     swscale-4
     PROPERTIES IMPORTED_LOCATION
     # change path when ues other computer
-    E:/AndroidStudioProject/FFmpegAndroidDemo/app/src/main/cpp/libs/libswscale-4.so
+    ${distribution_DIR}/libswscale-4.so
     )
 include_directories(
     src/main/cpp/include/libswscale/
 )
-#--------------------------------------
+
 
 find_library( # Sets the name of the path variable.
               log-lib

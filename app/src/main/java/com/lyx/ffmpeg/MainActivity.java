@@ -1,7 +1,10 @@
 package com.lyx.ffmpeg;
 
+import android.annotation.SuppressLint;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.os.Handler;
+import android.os.Message;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
@@ -18,6 +21,8 @@ import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.ProtocolException;
 import java.net.URL;
+import java.util.List;
+import java.util.Map;
 
 public class MainActivity extends AppCompatActivity implements JniReponse.ResponseListener {
 
@@ -39,6 +44,7 @@ public class MainActivity extends AppCompatActivity implements JniReponse.Respon
     private SurfaceView surface;
     private EditText ip;
     private EditText port;
+    private TextView tipTV;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -51,6 +57,7 @@ public class MainActivity extends AppCompatActivity implements JniReponse.Respon
         surface = findViewById(R.id.surface);
         ip = findViewById(R.id.ip);
         port = findViewById(R.id.port);
+        tipTV = findViewById(R.id.tip);
 
         tv.setText(stringFromJNI());
         tv.setOnClickListener(new View.OnClickListener() {
@@ -90,8 +97,17 @@ public class MainActivity extends AppCompatActivity implements JniReponse.Respon
         imageView.setImageBitmap(bitmap);
     }
 
+    @SuppressLint("HandlerLeak")
+    private Handler handler = new Handler() {
+        @Override
+        public void handleMessage(Message msg) {
+            super.handleMessage(msg);
+            tipTV.setText("接收到的数据：" + msg.what);
+        }
+    };
+
     private void parserStream() {
-//        InputStream inputStream = getResources().openRawResource(R.raw.fwj);
+//        InputStream inputStream = getResources().openRawResource(R.raw.cuc_ieschool);
 //        byte[] buffer = new byte[1024 * 8];
 //
 //        int len;
@@ -113,6 +129,8 @@ public class MainActivity extends AppCompatActivity implements JniReponse.Respon
             conn.connect();
 
             InputStream inputStream = conn.getInputStream();
+            Map<String, List<String>> map = conn.getHeaderFields();
+            Log.w("parserStream", map.toString());
 
             if (HttpURLConnection.HTTP_OK == conn.getResponseCode()) {
 
@@ -123,7 +141,7 @@ public class MainActivity extends AppCompatActivity implements JniReponse.Respon
                         byte[] read = new byte[len];
 
                         int readLen = inputStream.read(read);
-
+                        handler.sendEmptyMessage(readLen);
                         parserStream(read, readLen, surface.getHolder().getSurface());
 
                     }
